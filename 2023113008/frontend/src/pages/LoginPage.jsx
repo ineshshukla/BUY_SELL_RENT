@@ -1,31 +1,39 @@
-import { Link, redirect } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import Header from '../Header';
 import logo from '../static/logo.png'
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import axios from 'axios';
+import { UserContext } from '../UserContext';
 
 export default function LoginPage(){
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [redirect, setRedirect] = useState(false);
+    const {setUser} = useContext(UserContext);
+
     async function LoginUser(ev) {
-      ev.preventDefault();
-      try {
-          console.log(email, password);
-          const { data } = await axios.post('/login', { email, password });
-          console.log(data); // You should check the response here for login success
-          alert('Login Successful!');
-          
-      } catch (e) {
-          console.log(e); // You can log the error to see what the backend sent
-          if (e.response && e.response.status === 400) {
-              alert('Login Failed! User not found.');
-          } else if (e.response && e.response.status === 422) {
-              alert('Login Failed! Incorrect password.');
-          } else {
-              alert('An error occurred during login.');
-          }
-      }
-  }
+        ev.preventDefault();
+        try {
+            const {data} = await axios.post('/login', { email, password });
+            setUser(data); 
+            alert('Login Successful!');
+            setRedirect(true);
+        } catch (e) {
+            if (e.response && e.response.status === 400) {
+                alert('Login Failed! User not found.');
+            } else if (e.response && e.response.status === 422) {
+                alert('Login Failed! Incorrect password.');
+            } else {
+                alert('An error occurred during login.');
+            }
+        }
+    }
+
+    if(redirect){
+        return <Navigate to={'/'}/>
+    }
+
+
     return(
       <div className="min-h-screen bg-gray-200 flex flex-col">
       {/* Header Section */}
