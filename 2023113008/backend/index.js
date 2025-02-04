@@ -4,6 +4,9 @@ const mongoose = require('mongoose')
 const bcrypt= require('bcryptjs')
 const jwt = require('jsonwebtoken');
 const User= require('./models/User.js');
+const Item = require('./models/Item.js'); // Import Item model
+const cookieParser = require('cookie-parser');
+const Order = require('./models/Order.js'); // Add this line
 require('dotenv').config();
 
 
@@ -12,12 +15,29 @@ const bcryptSalt = bcrypt.genSaltSync(8);
 const jwtSecret='aiduiosahoc';
 
 app.use(express.json()); 
+app.use(cookieParser());
 app.use(cors({
     origin: ['http://localhost:5173', 'http://127.0.0.1:5173'], 
     credentials: true
 }));
 
 mongoose.connect(process.env.MONGO_URL);
+
+// Add this middleware function after mongoose.connect
+const authenticateToken = (req, res, next) => {
+    const token = req.cookies.token;
+    if (!token) {
+        return res.status(401).json({ error: 'Access denied' });
+    }
+
+    jwt.verify(token, jwtSecret, (err, user) => {
+        if (err) {
+            return res.status(403).json({ error: 'Invalid token' });
+        }
+        req.user = user;
+        next();
+    });
+};
 
 app.get('/test', (req,res)=>{
     res.json('test ok');
@@ -62,10 +82,23 @@ app.post('/login', async (req, res) => {
         if (userDoc) {
             const passOK = bcrypt.compareSync(password, userDoc.password);
             if (passOK) {
-                jwt.sign({ email: userDoc.email, id: userDoc._id }, jwtSecret, {}, (err, token) => {
-                    if (err) throw err;
-                    res.cookie('token', token).status(200).json(userDoc);
-                });
+                jwt.sign(
+                    {
+                        id: userDoc._id,
+                        email: userDoc.email,
+                    },
+                    jwtSecret,
+                    { expiresIn: '24h' }, // Add token expiration
+                    (err, token) => {
+                        if (err) throw err;
+                        res.cookie('token', token, {
+                            secure: true,
+                            sameSite: 'none',
+                            httpOnly: true,
+                            maxAge: 24 * 60 * 60 * 1000 // 24 hours in milliseconds
+                        }).json(userDoc);
+                    }
+                );
             } else {
                 res.status(422).json('password incorrect');
             }
@@ -108,7 +141,7 @@ app.post('/api/check-uniqueness', async (req, res) => {
     }
 });
 
-app.put('/api/users/:id', async (req, res) => {
+app.put('/api/users/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { firstName, lastName, email, age, contactNumber, password } = req.body;
 
@@ -130,6 +163,373 @@ app.put('/api/users/:id', async (req, res) => {
         res.json(updatedUser);
     } catch (error) {
         res.status(500).json({ error: 'Failed to update user' });
+    }
+});
+
+app.get('/profile', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('-password');
+        res.json(user);
+    } catch (dbError) {
+        console.error("Database error:", dbError);
+        res.status(500).json(null);
+    }
+});
+
+// Add a logout endpoint
+app.post('/logout', (req, res) => {
+    res.cookie('token', '', {
+        secure: true,
+        sameSite: 'none',
+        httpOnly: true,
+        expires: new Date(0)
+    }).json({ message: 'Logged out successfully' });
+});
+
+// Add routes for items
+app.get('/api/items', authenticateToken, async (req, res) => {
+    const { seller } = req.query;
+    try {
+        const items = await Item.find({ seller });
+        res.json(items);
+    } catch (err) {
+        console.error('Failed to fetch items:', err);
+        res.status(500).json({ message: 'Failed to fetch items' });
+    }
+});
+
+app.post('/api/items', authenticateToken, async (req, res) => {
+    const { name, price, description, category, seller } = req.body;
+    try {
+        const newItem = new Item({ name, price, description, category, seller });
+        await newItem.save();
+        res.status(201).json(newItem);
+    } catch (err) {
+        console.error('Failed to add item:', err);
+        res.status(500).json({ message: 'Failed to add item' });
+    }
+});
+
+// Update search route to only return available items
+app.get('/api/items/search', authenticateToken, async (req, res) => {
+    const { userId } = req.query;
+    try {
+        const user = await User.findById(userId);
+        const items = await Item.find({
+            seller: { $ne: userId },
+            _id: { $nin: user.cartItems },
+            status: 'available' // Only return available items
+        });
+        res.json(items);
+    } catch (err) {
+        console.error('Failed to fetch items:', err);
+        res.status(500).json({ message: 'Failed to fetch items' });
+    }
+});
+
+// Add route to fetch items in the user's cart
+// Update cart items route to only return available items
+app.get('/api/cart/items', authenticateToken, async (req, res) => {
+    const { userId } = req.query;
+    try {
+        const user = await User.findById(userId);
+        const cartItems = await Item.find({
+            _id: { $in: user.cartItems },
+            status: 'available'
+        });
+        res.json(cartItems);
+    } catch (err) {
+        console.error('Failed to fetch cart items:', err);
+        res.status(500).json({ message: 'Failed to fetch cart items' });
+    }
+});
+
+// Add endpoint to handle adding items to the user's cart
+app.post('/api/cart/add', authenticateToken, async (req, res) => {
+    const { userId, itemId } = req.body;
+    try {
+        const user = await User.findById(userId);
+        if (!user.cartItems.includes(itemId)) {
+            user.cartItems.push(itemId);
+            await user.save();
+            res.status(200).json({ message: 'Item added to cart successfully' });
+        } else {
+            res.status(400).json({ message: 'Item already in cart' });
+        }
+    } catch (err) {
+        console.error('Failed to add item to cart:', err);
+        res.status(500).json({ message: 'Failed to add item to cart' });
+    }
+});
+
+// Add endpoint to handle removing items from the user's cart
+app.post('/api/cart/remove', authenticateToken, async (req, res) => {
+    const { userId, itemId } = req.body;
+    try {
+        const user = await User.findById(userId);
+        user.cartItems = user.cartItems.filter(id => id.toString() !== itemId);
+        await user.save();
+        res.status(200).json({ message: 'Item removed from cart successfully' });
+    } catch (err) {
+        console.error('Failed to remove item from cart:', err);
+        res.status(500).json({ message: 'Failed to remove item from cart' });
+    }
+});
+
+// Route to fetch a single item by its ID
+app.get('/api/items/:itemId', async (req, res) => {
+    try {
+        const { itemId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(itemId)) {
+            return res.status(400).json({ message: 'Invalid item ID' });
+        }
+        const item = await Item.findById(itemId).populate('seller', 'name');
+        if (!item) {
+            return res.status(404).json({ message: 'Item not found' });
+        }
+        res.json(item);
+    } catch (err) {
+        console.error('Error fetching item:', err);
+        res.status(500).json({ message: 'Failed to fetch item' });
+    }
+});
+
+// Create new order - modified to handle multiple sellers
+app.post('/api/orders/create', authenticateToken, async (req, res) => {
+    const { userId, items } = req.body;
+    try {
+        // Check if all items are still available
+        const itemIds = items.map(item => item._id);
+        const availableItems = await Item.find({
+            _id: { $in: itemIds },
+            status: 'available'
+        });
+
+        if (availableItems.length !== items.length) {
+            return res.status(400).json({ message: 'Some items are no longer available' });
+        }
+
+        // Mark all items as sold
+        await Item.updateMany(
+            { _id: { $in: itemIds } },
+            { status: 'sold' }
+        );
+
+        // Create order with separate OTPs for each item
+        const itemsWithSellers = await Promise.all(items.map(async (item) => {
+            const fullItem = await Item.findById(item._id)
+                .populate('seller', 'firstName lastName email');
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            return {
+                item: item._id,
+                seller: fullItem.seller._id,
+                status: 'pending',
+                otp: otp // Store unhashed OTP
+            };
+        }));
+
+        const order = new Order({
+            buyer: userId,
+            items: itemsWithSellers,
+            total: items.reduce((sum, item) => sum + item.price, 0)
+        });
+
+        await order.save();
+        await User.findByIdAndUpdate(userId, { $set: { cartItems: [] } });
+
+        // Send response with populated data
+        const populatedOrder = await Order.findById(order._id)
+            .populate('buyer')
+            .populate({
+                path: 'items.item',
+                select: 'name price description category'
+            })
+            .populate({
+                path: 'items.seller',
+                select: 'firstName lastName email'
+            })
+            .lean();
+
+        res.json(populatedOrder);
+    } catch (err) {
+        console.error('Failed to create order:', err);
+        res.status(500).json({ message: 'Failed to create order' });
+    }
+});
+
+// Get pending orders - Update this route
+app.get('/api/orders/pending', authenticateToken, async (req, res) => {
+    const { userId } = req.query;
+    try {
+        const orders = await Order.find({ 
+            buyer: userId,
+            'items.status': 'pending' // Changed from status to items.status
+        })
+        .populate('buyer', 'firstName lastName email')
+        .populate({
+            path: 'items.item',
+            model: 'Item',
+            select: 'name price description category'
+        })
+        .populate({
+            path: 'items.seller',
+            model: 'User',
+            select: 'firstName lastName email'
+        })
+        .lean();
+
+        console.log('Pending orders for buyer:', orders);
+        res.json(orders);
+    } catch (err) {
+        console.error('Error fetching pending orders:', err);
+        res.status(500).json({ message: 'Failed to fetch orders' });
+    }
+});
+
+// Get bought items
+app.get('/api/orders/bought', authenticateToken, async (req, res) => {
+    const { userId } = req.query;
+    try {
+        const orders = await Order.find({ 
+            buyer: userId,
+            'items.status': 'completed' // Changed to look at individual item status
+        })
+        .populate('buyer')
+        .populate({
+            path: 'items.item',
+            model: 'Item',
+            select: 'name price description category'
+        })
+        .populate({
+            path: 'items.seller',
+            model: 'User',
+            select: 'firstName lastName email'
+        })
+        .lean();
+
+        // Filter to only include completed items
+        const processedOrders = orders.map(order => ({
+            ...order,
+            items: order.items.filter(item => item.status === 'completed')
+        })).filter(order => order.items.length > 0);
+
+        res.json(processedOrders);
+    } catch (err) {
+        console.error('Error fetching bought orders:', err);
+        res.status(500).json({ message: 'Failed to fetch orders' });
+    }
+});
+
+// Get sold items
+app.get('/api/orders/sold', authenticateToken, async (req, res) => {
+    const { userId } = req.query;
+    try {
+        const orders = await Order.find({
+            'items.seller': userId
+        })
+        .populate('buyer', 'email firstName lastName')
+        .populate({
+            path: 'items.item',
+            model: 'Item',
+            select: 'name price description category'
+        })
+        .lean();
+
+        const filteredOrders = orders.map(order => ({
+            ...order,
+            items: order.items.filter(item => item.seller.toString() === userId)
+        }));
+
+        console.log('Sold orders:', JSON.stringify(filteredOrders, null, 2));
+        res.json(filteredOrders);
+    } catch (err) {
+        console.error('Error fetching sold orders:', err);
+        res.status(500).json({ message: 'Failed to fetch orders' });
+    }
+});
+
+// Verify order OTP
+app.post('/api/orders/verify', authenticateToken, async (req, res) => {
+    const { orderId, itemId, sellerId, otp } = req.body;
+    try {
+        const order = await Order.findById(orderId);
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        const itemToUpdate = order.items.find(
+            item => item.item.toString() === itemId && 
+                   item.seller.toString() === sellerId &&
+                   item.status === 'pending'
+        );
+
+        if (!itemToUpdate) {
+            return res.status(404).json({ message: 'Item not found in order or already completed' });
+        }
+
+        if (itemToUpdate.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        // Update item status in order
+        itemToUpdate.status = 'completed';
+        await order.save();
+
+        // Check if all items in order are completed
+        const allItemsCompleted = order.items.every(item => item.status === 'completed');
+        if (allItemsCompleted) {
+            // Update Item status to sold if not already
+            await Item.findByIdAndUpdate(itemId, { status: 'sold' });
+        }
+
+        res.json({ 
+            message: 'Delivery verified successfully',
+            orderStatus: allItemsCompleted ? 'completed' : 'pending'
+        });
+    } catch (err) {
+        console.error('Error verifying delivery:', err);
+        res.status(500).json({ message: 'Failed to verify delivery' });
+    }
+});
+
+// Update pending deliveries endpoint
+app.get('/api/orders/pending-deliveries', authenticateToken, async (req, res) => {
+    const { sellerId } = req.query;
+    try {
+        const orders = await Order.find({
+            'items': {
+                $elemMatch: {
+                    seller: sellerId,
+                    status: 'pending'
+                }
+            }
+        })
+        .populate('buyer', 'email firstName lastName')
+        .populate({
+            path: 'items.item',
+            model: 'Item',
+            select: 'name price description category'
+        })
+        .lean();
+
+        // Only return orders that have pending items for this seller
+        const filteredOrders = orders.map(order => ({
+            ...order,
+            items: order.items.filter(
+                item => item.seller.toString() === sellerId && 
+                item.status === 'pending'
+            )
+        })).filter(order => order.items.length > 0);
+
+        if (filteredOrders.length === 0) {
+            return res.status(200).json([]); // Return empty array instead of 404
+        }
+
+        console.log('Pending deliveries for seller:', filteredOrders);
+        res.json(filteredOrders);
+    } catch (err) {
+        console.error('Failed to fetch pending deliveries:', err);
+        res.status(500).json({ message: 'Failed to fetch deliveries' });
     }
 });
 

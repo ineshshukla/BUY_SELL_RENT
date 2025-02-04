@@ -2,11 +2,15 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const OrderSchema = new Schema({
-    transactionId: { type: String, required: true, unique: true },
-    buyer: { type: Schema.Types.ObjectId, ref: 'User', required: true }, // Reference to Buyer
-    seller: { type: Schema.Types.ObjectId, ref: 'User', required: true }, // Reference to Seller
-    amount: { type: Number, required: true, min: 0 },
-    hashedOtp: { type: String, required: true } // Store hashed OTP for security
+    buyer: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    items: [{
+        item: { type: Schema.Types.ObjectId, ref: 'Item' },
+        seller: { type: Schema.Types.ObjectId, ref: 'User' },
+        status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
+        otp: { type: String, required: true }
+    }],
+    total: { type: Number, required: true },
+    createdAt: { type: Date, default: Date.now }
 });
 
 const OrderModel = mongoose.model('Order', OrderSchema);

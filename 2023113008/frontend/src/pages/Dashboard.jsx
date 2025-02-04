@@ -1,4 +1,4 @@
-import { useContext, useState } from 'react';
+import { useContext, useState, useEffect } from 'react';
 import Header from '../Header';
 import { UserContext } from '../UserContext';
 import { Navigate } from 'react-router-dom';
@@ -8,6 +8,15 @@ export default function Dashboard() {
     const { user } = useContext(UserContext);
     const [isEditing, setIsEditing] = useState(false);
     const [error, setError] = useState('');
+    const [items, setItems] = useState([]);
+    const [showAddItemForm, setShowAddItemForm] = useState(false);
+    const [newItem, setNewItem] = useState({
+        name: '',
+        price: '',
+        description: '',
+        category: 'other',
+    });
+
     const [editForm, setEditForm] = useState({
         firstName: user?.firstName || '',
         lastName: user?.lastName || '',
@@ -16,6 +25,22 @@ export default function Dashboard() {
         contactNumber: user?.contactNumber || '',
         password: '', // Keep empty for security reasons, update only if changed
     });
+
+    useEffect(() => {
+        async function fetchItems() {
+            try {
+                const { data } = await axios.get(`/api/items?seller=${user._id}`);
+                setItems(data);
+            } catch (err) {
+                console.error("Failed to fetch items:", err);
+                setError('Failed to fetch items.');
+            }
+        }
+
+        if (user) {
+            fetchItems();
+        }
+    }, [user]);
 
     if (!user) {
         return <Navigate to="/login" />;
@@ -26,35 +51,34 @@ export default function Dashboard() {
         setError('');
     };
 
-    // Update the handleSave function
-const handleSave = async () => {
-    try {
-        // Check uniqueness first
-        const response = await axios.post('/api/check-uniqueness', {
-            email: editForm.email,
-            contactNumber: editForm.contactNumber,
-            userId: user._id  // Use _id instead of id
-        });
+    const handleSave = async () => {
+        try {
+            // Check uniqueness first
+            const response = await axios.post('/api/check-uniqueness', {
+                email: editForm.email,
+                contactNumber: editForm.contactNumber,
+                userId: user._id  // Use _id instead of id
+            });
 
-        if (response.data.emailExists) {
-            setError('Email is already in use.');
-            return;
+            if (response.data.emailExists) {
+                setError('Email is already in use.');
+                return;
+            }
+
+            if (response.data.contactNumberExists) {
+                setError('Contact number is already in use.');
+                return;
+            }
+
+            // If unique, proceed with update
+            await axios.put(`/api/users/${user._id}`, editForm);
+            alert('Profile updated successfully!');
+            setIsEditing(false);
+        } catch (err) {
+            console.error("Update Error:", err);
+            setError(err.response?.data?.message || 'Failed to update profile.');
         }
-
-        if (response.data.contactNumberExists) {
-            setError('Contact number is already in use.');
-            return;
-        }
-
-        // If unique, proceed with update
-        await axios.put(`/api/users/${user._id}`, editForm);
-        alert('Profile updated successfully!');
-        setIsEditing(false);
-    } catch (err) {
-        console.error("Update Error:", err);
-        setError(err.response?.data?.message || 'Failed to update profile.');
-    }
-};   
+    };
 
     const handleCancel = () => {
         setEditForm({
@@ -67,6 +91,25 @@ const handleSave = async () => {
         });
         setIsEditing(false);
         setError('');
+    };
+
+    const handleAddItem = async (e) => {
+        e.preventDefault();
+        try {
+            const { data } = await axios.post('/api/items', { ...newItem, seller: user._id });
+            setItems([...items, data]);
+            setNewItem({
+                name: '',
+                price: '',
+                description: '',
+                category: 'other',
+            });
+            setShowAddItemForm(false);
+            alert('Item added successfully!');
+        } catch (err) {
+            console.error("Failed to add item:", err);
+            setError('Failed to add item.');
+        }
     };
 
     return (
@@ -163,6 +206,65 @@ const handleSave = async () => {
                                 </button>
                             </div>
                         </form>
+                    )}
+                </div>
+                <div className="bg-gray-800 rounded-2xl p-6 shadow-lg text-white mt-8">
+                    <h2 className="text-2xl font-serif mb-6">Your Items</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                        {items.map(item => (
+                            <div key={item._id} className="bg-gray-700 rounded-lg p-4 shadow-md">
+                                <h3 className="text-xl font-serif mb-2">{item.name}</h3>
+                                <p className="text-gray-300">Price: ${item.price}</p>
+                                <p className="text-gray-300">Description: {item.description}</p>
+                                <p className="text-gray-300">Category: {item.category}</p>
+                            </div>
+                        ))}
+                    </div>
+                    <button 
+                        onClick={() => setShowAddItemForm(!showAddItemForm)}
+                        className="primary mt-6 bg-blue-600 hover:bg-blue-700"
+                    >
+                        {showAddItemForm ? 'Cancel' : 'Add Item'}
+                    </button>
+                    {showAddItemForm && (
+                        <div className="mt-6 space-y-4 bg-gray-700 p-4 rounded-md">
+                            <form onSubmit={handleAddItem}>
+                                <input
+                                    type="text"
+                                    placeholder="Item Name"
+                                    value={newItem.name}
+                                    onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
+                                    className="text-gray-800 w-full p-2 border rounded-md"
+                                />
+                                <input
+                                    type="number"
+                                    placeholder="Price"
+                                    value={newItem.price}
+                                    onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
+                                    className="text-gray-800 w-full p-2 border rounded-md"
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="Description"
+                                    value={newItem.description}
+                                    onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
+                                    className="text-gray-800 w-full p-2 border rounded-md"
+                                />
+                                <select
+                                    value={newItem.category}
+                                    onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}
+                                    className="text-gray-800 w-full p-2 border rounded-md"
+                                >
+                                    <option value="clothing">Clothing</option>
+                                    <option value="grocery">Grocery</option>
+                                    <option value="electronics">Electronics</option>
+                                    <option value="other">Other</option>
+                                </select>
+                                <button type="submit" className="primary bg-blue-600 hover:bg-blue-700 mt-4">
+                                    Add Item
+                                </button>
+                            </form>
+                        </div>
                     )}
                 </div>
             </div>

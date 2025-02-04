@@ -4,6 +4,10 @@ input[type='text'], input[type='password'], input[type='email']{
   @apply w-full border my-2 py-2 px-3 rounded-2xl bg-gray-200;
 }
 
+select {
+  @apply w-full border my-2 py-2 px-3 rounded-2xl bg-gray-200;
+}
+
 input[type='number'], input[type='password'], input[type='email']{
   @apply w-full border my-2 py-2 px-3 rounded-2xl bg-gray-200;
 }
