@@ -4,10 +4,11 @@ const { Schema } = mongoose;
 const UserSchema = new Schema({
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
-    email: { type: String, unique: true, required: true, match: /@iiit\.ac\.in$/ }, // Enforcing IIIT email restriction
+    email: { type: String, unique: true, required: true, match: /iiit\.ac\.in$/ }, // Enforcing IIIT email restriction
     age: { type: Number, min: 0 },
     contactNumber: { type: String, required: true },
-    password: { type: String, required: true }, // Ensure hashing before saving
+    password: { type: String, required: function() { return !this.isCASUser; } }, // Ensure hashing before saving
+    isCASUser: { type: Boolean, default: false },
     cartItems: [{ type: Schema.Types.ObjectId, ref: 'Item' }], // References Item model
     sellerReviews: [{ type: String }] // Array of reviews as text (could be enhanced with a Review model)
 });

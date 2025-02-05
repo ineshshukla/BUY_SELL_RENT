@@ -12,6 +12,7 @@ import ProtectedRoutes from './components/ProtectedRoutes'
 import Item from './pages/Item'
 import Deliver from './pages/Deliver'
 import Support from './pages/Support'
+import CASRegisterPage from './pages/CASRegisterPage'
 
 axios.defaults.baseURL = 'http://localhost:4000';
 axios.defaults.withCredentials = true;
@@ -32,6 +33,7 @@ function App() {
         </Route>
         <Route path='/login' element={<LoginPage/>}/>
         <Route path='/register' element={<RegisterPage />}/>
+        <Route path='/cas-register' element={<CASRegisterPage />}/>
       </Routes>
     </UserContextProvider>
   )

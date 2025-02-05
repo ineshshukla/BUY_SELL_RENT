@@ -1,19 +1,31 @@
-import { Link, Navigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import logo from '../static/logo.png'
-import { useContext, useState } from 'react';
+import { useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { UserContext } from '../UserContext';
+import ReCAPTCHA from "react-google-recaptcha";
 
 export default function LoginPage(){
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [redirect, setRedirect] = useState(false);
     const { setUser } = useContext(UserContext);
+    const navigate = useNavigate();
+    const [captchaToken, setCaptchaToken] = useState(null);
+    const recaptchaRef = useRef(null);
 
     async function LoginUser(ev) {
         ev.preventDefault();
+        if (!captchaToken) {
+            alert('Please complete the reCAPTCHA');
+            return;
+        }
         try {
-            const { data } = await axios.post('/login', { email, password });
+            const { data } = await axios.post('/login', { 
+                email, 
+                password,
+                captchaToken 
+            });
             setUser(data);
             alert('Login Successful!');
             setRedirect(true);
@@ -22,11 +34,45 @@ export default function LoginPage(){
                 alert('Login Failed! User not found.');
             } else if (e.response && e.response.status === 422) {
                 alert('Login Failed! Incorrect password.');
+            } else if (e.response && e.response.status === 403) {
+                alert('reCAPTCHA verification failed.');
+                recaptchaRef.current.reset();
             } else {
                 alert('An error occurred during login.');
             }
         }
     }
+
+    function handleCaptchaChange(token) {
+        setCaptchaToken(token);
+    }
+
+    const handleCASLogin = () => {
+        window.location.href = 'http://localhost:4000/cas-login';
+    };
+
+    const handleCASResponse = async (email) => {
+        try {
+            const { data } = await axios.post('/cas-login-check', { email });
+            if (data.exists) {
+                setUser(data.user);
+                setRedirect(true);
+            } else {
+                navigate('/cas-register', { state: { email } });
+            }
+        } catch (e) {
+            alert('Login failed. Please try again.');
+        }
+    };
+
+    useEffect(() => {
+        // Check if we have a CAS response
+        const params = new URLSearchParams(window.location.search);
+        const casEmail = params.get('email');
+        if (casEmail) {
+            handleCASResponse(casEmail);
+        }
+    }, []);
 
     if (redirect) {
         return <Navigate to="/" />;
@@ -55,6 +101,14 @@ export default function LoginPage(){
               <input type="password" placeholder="password" 
               value={password}
               onChange={ev=> setPassword(ev.target.value)}/>
+              <div className="flex justify-center">
+                <ReCAPTCHA
+                    ref={recaptchaRef}
+                    sitekey="6LckkM0qAAAAADa59I7tMGGkzGgLmoEpBSJ5xwoO"
+                    onChange={handleCaptchaChange}
+                    theme="dark"
+                />
+              </div>
               <div className="pb-5">
                 <button className="primary text-gray-800 text-xl">Login</button>
                 <div className="flex justify-center pt-3 text-gray-200 font-serif">
@@ -65,6 +119,7 @@ export default function LoginPage(){
                 </div>
               </div>
             </form>
+            <button onClick={handleCASLogin} className="primary text-gray-800 text-xl mt-4">Login with CAS</button>
           </div>
         </div>
       </div>

@@ -1,29 +1,43 @@
-const express= require('express');
-const cors=require('cors');
-const mongoose = require('mongoose')
-const bcrypt= require('bcryptjs')
+const express = require('express');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User= require('./models/User.js');
+const User = require('./models/User.js');
 const Item = require('./models/Item.js'); // Import Item model
 const cookieParser = require('cookie-parser');
 const Order = require('./models/Order.js'); // Add this line
+const session = require('express-session');
+const CASAuthentication = require('cas-authentication');
+const axios = require('axios');
 require('dotenv').config();
 
-
-const app= express();
+const app = express();
 const bcryptSalt = bcrypt.genSaltSync(8);
-const jwtSecret='aiduiosahoc';
+const jwtSecret = 'aiduiosahoc';
 
-app.use(express.json()); 
+app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'], 
+    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
     credentials: true
 }));
 
 mongoose.connect(process.env.MONGO_URL);
 
-// Add this middleware function after mongoose.connect
+app.use(session({
+    secret: 'secret-key',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }
+}));
+
+const cas = new CASAuthentication({
+    cas_url: 'https://login.iiit.ac.in/cas',
+    service_url: 'http://localhost:4000',
+    cas_version: '3.0'
+});
+
 const authenticateToken = (req, res, next) => {
     const token = req.cookies.token;
     if (!token) {
@@ -39,21 +53,18 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-app.get('/test', (req,res)=>{
+app.get('/test', (req, res) => {
     res.json('test ok');
 });
 
-
 app.post('/register', async (req, res) => {
     const { firstName, lastName, email, age, contactNumber, password } = req.body;
-    
+
     try {
-        // Ensure email is from IIIT domain
         if (!email.endsWith('@iiit.ac.in')) {
             return res.status(400).json({ error: 'Only IIIT emails are allowed.' });
         }
 
-        // Create new user
         const userDoc = await User.create({
             firstName,
             lastName,
@@ -66,17 +77,38 @@ app.post('/register', async (req, res) => {
         });
 
         res.status(201).json(userDoc);
-
     } catch (e) {
         res.status(422).json({ error: 'Registration failed. Email might already be in use.' });
     }
 });
 
+// Add this function to verify reCAPTCHA token
+async function verifyRecaptcha(token) {
+    try {
+        const response = await axios.post('https://www.google.com/recaptcha/api/siteverify', null, {
+            params: {
+                secret: process.env.RECAPTCHA_SECRET_KEY,
+                response: token
+            }
+        });
+        return response.data.success;
+    } catch (error) {
+        console.error('reCAPTCHA verification error:', error);
+        return false;
+    }
+}
 
+// Modify the login route to include reCAPTCHA verification
 app.post('/login', async (req, res) => {
     try {
-        const { email, password } = req.body;
-        console.log('Request received:', req.body);
+        const { email, password, captchaToken } = req.body;
+
+        // Verify reCAPTCHA
+        const isVerified = await verifyRecaptcha(captchaToken);
+        if (!isVerified) {
+            return res.status(403).json({ error: 'reCAPTCHA verification failed' });
+        }
+
         const userDoc = await User.findOne({ email });
 
         if (userDoc) {
@@ -88,14 +120,14 @@ app.post('/login', async (req, res) => {
                         email: userDoc.email,
                     },
                     jwtSecret,
-                    { expiresIn: '24h' }, // Add token expiration
+                    { expiresIn: '24h' },
                     (err, token) => {
                         if (err) throw err;
                         res.cookie('token', token, {
                             secure: true,
                             sameSite: 'none',
                             httpOnly: true,
-                            maxAge: 24 * 60 * 60 * 1000 // 24 hours in milliseconds
+                            maxAge: 24 * 60 * 60 * 1000
                         }).json(userDoc);
                     }
                 );
@@ -110,12 +142,80 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Update the check-uniqueness endpoint
+app.get('/cas-login', cas.bounce, async (req, res) => {
+    const email = req.session[cas.session_name];
+    res.redirect(`http://localhost:5173/login?email=${email}`);
+});
+
+app.post('/cas-login-check', async (req, res) => {
+    const { email } = req.body;
+    try {
+        const user = await User.findOne({ email });
+        if (user) {
+            jwt.sign(
+                { id: user._id, email: user.email },
+                jwtSecret,
+                { expiresIn: '24h' },
+                (err, token) => {
+                    if (err) throw err;
+                    res.cookie('token', token, {
+                        secure: true,
+                        sameSite: 'none',
+                        httpOnly: true,
+                        maxAge: 24 * 60 * 60 * 1000
+                    }).json({ exists: true, user });
+                }
+            );
+        } else {
+            res.json({ exists: false });
+        }
+    } catch (e) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+app.post('/cas-register', async (req, res) => {
+    const { email, firstName, lastName, age, contactNumber, isCASUser } = req.body;
+    console.log('Request received:', req.body);
+
+    try {
+        const userDoc = await User.create({
+            firstName,
+            lastName,
+            email,
+            age,
+            contactNumber,
+            isCASUser,
+            cartItems: [],
+            sellerReviews: []
+        });
+
+        jwt.sign(
+            { id: userDoc._id, email: userDoc.email },
+            jwtSecret,
+            { expiresIn: '24h' },
+            (err, token) => {
+                if (err) throw err;
+                res.cookie('token', token, {
+                    secure: true,
+                    sameSite: 'none',
+                    httpOnly: true,
+                    maxAge: 24 * 60 * 60 * 1000
+                }).json(userDoc);
+            }
+        );
+    } catch (e) {
+        console.log(e);
+        res.status(422).json({ error: 'Registration failed' });
+    }
+});
+
+app.get('/logout', cas.logout);
+
 app.post('/api/check-uniqueness', async (req, res) => {
     try {
         const { email, contactNumber, userId } = req.body;
-        
-        // Create query conditions
+
         const query = {
             $or: [
                 { email: email },
@@ -123,12 +223,10 @@ app.post('/api/check-uniqueness', async (req, res) => {
             ]
         };
 
-        // Add userId check if provided
         if (userId) {
             query._id = { $ne: userId };
         }
 
-        // Find any existing users with same email or contact
         const existingUser = await User.findOne(query);
 
         res.json({
@@ -148,12 +246,10 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
     try {
         let updateFields = { firstName, lastName, email, age, contactNumber };
 
-        // Hash password only if it's provided (not empty)
         if (password) {
             updateFields.password = bcrypt.hashSync(password, 8);
         }
 
-        // Update user in the database
         const updatedUser = await User.findByIdAndUpdate(id, updateFields, { new: true });
 
         if (!updatedUser) {
@@ -176,7 +272,6 @@ app.get('/profile', authenticateToken, async (req, res) => {
     }
 });
 
-// Add a logout endpoint
 app.post('/logout', (req, res) => {
     res.cookie('token', '', {
         secure: true,
@@ -186,7 +281,6 @@ app.post('/logout', (req, res) => {
     }).json({ message: 'Logged out successfully' });
 });
 
-// Add routes for items
 app.get('/api/items', authenticateToken, async (req, res) => {
     const { seller } = req.query;
     try {
@@ -210,7 +304,6 @@ app.post('/api/items', authenticateToken, async (req, res) => {
     }
 });
 
-// Update search route to only return available items
 app.get('/api/items/search', authenticateToken, async (req, res) => {
     const { userId } = req.query;
     try {
@@ -218,7 +311,7 @@ app.get('/api/items/search', authenticateToken, async (req, res) => {
         const items = await Item.find({
             seller: { $ne: userId },
             _id: { $nin: user.cartItems },
-            status: 'available' // Only return available items
+            status: 'available'
         });
         res.json(items);
     } catch (err) {
@@ -227,8 +320,6 @@ app.get('/api/items/search', authenticateToken, async (req, res) => {
     }
 });
 
-// Add route to fetch items in the user's cart
-// Update cart items route to only return available items
 app.get('/api/cart/items', authenticateToken, async (req, res) => {
     const { userId } = req.query;
     try {
@@ -244,7 +335,6 @@ app.get('/api/cart/items', authenticateToken, async (req, res) => {
     }
 });
 
-// Add endpoint to handle adding items to the user's cart
 app.post('/api/cart/add', authenticateToken, async (req, res) => {
     const { userId, itemId } = req.body;
     try {
@@ -262,7 +352,6 @@ app.post('/api/cart/add', authenticateToken, async (req, res) => {
     }
 });
 
-// Add endpoint to handle removing items from the user's cart
 app.post('/api/cart/remove', authenticateToken, async (req, res) => {
     const { userId, itemId } = req.body;
     try {
@@ -276,7 +365,6 @@ app.post('/api/cart/remove', authenticateToken, async (req, res) => {
     }
 });
 
-// Route to fetch a single item by its ID
 app.get('/api/items/:itemId', async (req, res) => {
     try {
         const { itemId } = req.params;
@@ -294,11 +382,9 @@ app.get('/api/items/:itemId', async (req, res) => {
     }
 });
 
-// Create new order - modified to handle multiple sellers
 app.post('/api/orders/create', authenticateToken, async (req, res) => {
     const { userId, items } = req.body;
     try {
-        // Check if all items are still available
         const itemIds = items.map(item => item._id);
         const availableItems = await Item.find({
             _id: { $in: itemIds },
@@ -309,13 +395,11 @@ app.post('/api/orders/create', authenticateToken, async (req, res) => {
             return res.status(400).json({ message: 'Some items are no longer available' });
         }
 
-        // Mark all items as sold
         await Item.updateMany(
             { _id: { $in: itemIds } },
             { status: 'sold' }
         );
 
-        // Create order with separate OTPs for each item
         const itemsWithSellers = await Promise.all(items.map(async (item) => {
             const fullItem = await Item.findById(item._id)
                 .populate('seller', 'firstName lastName email');
@@ -324,7 +408,7 @@ app.post('/api/orders/create', authenticateToken, async (req, res) => {
                 item: item._id,
                 seller: fullItem.seller._id,
                 status: 'pending',
-                otp: otp // Store unhashed OTP
+                otp: otp
             };
         }));
 
@@ -337,7 +421,6 @@ app.post('/api/orders/create', authenticateToken, async (req, res) => {
         await order.save();
         await User.findByIdAndUpdate(userId, { $set: { cartItems: [] } });
 
-        // Send response with populated data
         const populatedOrder = await Order.findById(order._id)
             .populate('buyer')
             .populate({
@@ -357,26 +440,25 @@ app.post('/api/orders/create', authenticateToken, async (req, res) => {
     }
 });
 
-// Get pending orders - Update this route
 app.get('/api/orders/pending', authenticateToken, async (req, res) => {
     const { userId } = req.query;
     try {
-        const orders = await Order.find({ 
+        const orders = await Order.find({
             buyer: userId,
-            'items.status': 'pending' // Changed from status to items.status
+            'items.status': 'pending'
         })
-        .populate('buyer', 'firstName lastName email')
-        .populate({
-            path: 'items.item',
-            model: 'Item',
-            select: 'name price description category'
-        })
-        .populate({
-            path: 'items.seller',
-            model: 'User',
-            select: 'firstName lastName email'
-        })
-        .lean();
+            .populate('buyer', 'firstName lastName email')
+            .populate({
+                path: 'items.item',
+                model: 'Item',
+                select: 'name price description category'
+            })
+            .populate({
+                path: 'items.seller',
+                model: 'User',
+                select: 'firstName lastName email'
+            })
+            .lean();
 
         console.log('Pending orders for buyer:', orders);
         res.json(orders);
@@ -386,28 +468,26 @@ app.get('/api/orders/pending', authenticateToken, async (req, res) => {
     }
 });
 
-// Get bought items
 app.get('/api/orders/bought', authenticateToken, async (req, res) => {
     const { userId } = req.query;
     try {
-        const orders = await Order.find({ 
+        const orders = await Order.find({
             buyer: userId,
-            'items.status': 'completed' // Changed to look at individual item status
+            'items.status': 'completed'
         })
-        .populate('buyer')
-        .populate({
-            path: 'items.item',
-            model: 'Item',
-            select: 'name price description category'
-        })
-        .populate({
-            path: 'items.seller',
-            model: 'User',
-            select: 'firstName lastName email'
-        })
-        .lean();
+            .populate('buyer')
+            .populate({
+                path: 'items.item',
+                model: 'Item',
+                select: 'name price description category'
+            })
+            .populate({
+                path: 'items.seller',
+                model: 'User',
+                select: 'firstName lastName email'
+            })
+            .lean();
 
-        // Filter to only include completed items
         const processedOrders = orders.map(order => ({
             ...order,
             items: order.items.filter(item => item.status === 'completed')
@@ -420,20 +500,19 @@ app.get('/api/orders/bought', authenticateToken, async (req, res) => {
     }
 });
 
-// Get sold items
 app.get('/api/orders/sold', authenticateToken, async (req, res) => {
     const { userId } = req.query;
     try {
         const orders = await Order.find({
             'items.seller': userId
         })
-        .populate('buyer', 'email firstName lastName')
-        .populate({
-            path: 'items.item',
-            model: 'Item',
-            select: 'name price description category'
-        })
-        .lean();
+            .populate('buyer', 'email firstName lastName')
+            .populate({
+                path: 'items.item',
+                model: 'Item',
+                select: 'name price description category'
+            })
+            .lean();
 
         const filteredOrders = orders.map(order => ({
             ...order,
@@ -448,7 +527,6 @@ app.get('/api/orders/sold', authenticateToken, async (req, res) => {
     }
 });
 
-// Verify order OTP
 app.post('/api/orders/verify', authenticateToken, async (req, res) => {
     const { orderId, itemId, sellerId, otp } = req.body;
     try {
@@ -458,9 +536,9 @@ app.post('/api/orders/verify', authenticateToken, async (req, res) => {
         }
 
         const itemToUpdate = order.items.find(
-            item => item.item.toString() === itemId && 
-                   item.seller.toString() === sellerId &&
-                   item.status === 'pending'
+            item => item.item.toString() === itemId &&
+                item.seller.toString() === sellerId &&
+                item.status === 'pending'
         );
 
         if (!itemToUpdate) {
@@ -471,18 +549,15 @@ app.post('/api/orders/verify', authenticateToken, async (req, res) => {
             return res.status(400).json({ message: 'Invalid OTP' });
         }
 
-        // Update item status in order
         itemToUpdate.status = 'completed';
         await order.save();
 
-        // Check if all items in order are completed
         const allItemsCompleted = order.items.every(item => item.status === 'completed');
         if (allItemsCompleted) {
-            // Update Item status to sold if not already
             await Item.findByIdAndUpdate(itemId, { status: 'sold' });
         }
 
-        res.json({ 
+        res.json({
             message: 'Delivery verified successfully',
             orderStatus: allItemsCompleted ? 'completed' : 'pending'
         });
@@ -492,7 +567,6 @@ app.post('/api/orders/verify', authenticateToken, async (req, res) => {
     }
 });
 
-// Update pending deliveries endpoint
 app.get('/api/orders/pending-deliveries', authenticateToken, async (req, res) => {
     const { sellerId } = req.query;
     try {
@@ -504,25 +578,24 @@ app.get('/api/orders/pending-deliveries', authenticateToken, async (req, res) =>
                 }
             }
         })
-        .populate('buyer', 'email firstName lastName')
-        .populate({
-            path: 'items.item',
-            model: 'Item',
-            select: 'name price description category'
-        })
-        .lean();
+            .populate('buyer', 'email firstName lastName')
+            .populate({
+                path: 'items.item',
+                model: 'Item',
+                select: 'name price description category'
+            })
+            .lean();
 
-        // Only return orders that have pending items for this seller
         const filteredOrders = orders.map(order => ({
             ...order,
             items: order.items.filter(
-                item => item.seller.toString() === sellerId && 
+                item => item.seller.toString() === sellerId &&
                 item.status === 'pending'
             )
         })).filter(order => order.items.length > 0);
 
         if (filteredOrders.length === 0) {
-            return res.status(200).json([]); // Return empty array instead of 404
+            return res.status(200).json([]);
         }
 
         console.log('Pending deliveries for seller:', filteredOrders);
